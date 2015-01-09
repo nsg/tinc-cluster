@@ -1,0 +1,123 @@
+#!/bin/bash
+
+if [ -z $1 ]; then
+	echo "usage: $0 name"
+	echo "       name     Name the VPN/device, keep it to [a-z0-9]."
+	echo "       id       Select 0-254, the network addresses will be"
+	echo "                based on 10.10.{id}.{incremental number}."
+	echo "                Leve this empty to use the default 0 value."
+	echo "       STDIN    Send a list of hosts to connect to on STDIN."
+	echo
+	echo "Example: "
+	echo "echo "host1.example.com host2.example.com" | $(basename $0) vpn"
+	exit 1
+fi
+
+HOSTS="$( cat - )"
+VPN_NAME=$1
+if [ -z $2 ]; then
+	NET_ID=0
+else
+	NET_ID=$2
+fi
+
+md5() {
+	echo $@ | md5sum - | awk '{print $1}'
+}
+
+ressh() {
+	ssh -l root $host $@
+}
+
+log() {
+	echo -e "\e[1m> $@\e[0m"
+}
+
+install_packages() {
+	local remote_dist=$(ssh -l root $host lsb_release -is)
+
+	case $remote_dist in
+		Ubuntu)
+			log "Found Ubuntu, installing packages."
+			ssh -l root $host apt-get install -y tinc
+			;;
+		*)
+			log "Error, dist $remote_dist not implemented."
+			exit 1
+	esac
+}
+
+setup_tinc_conf() {
+	local hosts=$1
+	local name=$(md5 $host)
+
+	ressh mkdir -p /etc/tinc/$VPN_NAME
+
+	log "Setup tinc.conf"
+	echo -e "Name=$name\nDevice=/dev/net/tun\nMode=switch" | ressh "cat - > /etc/tinc/$VPN_NAME/tinc.conf"
+	for h in $hosts; do
+		[[ $h == $host ]] && continue;
+		name=$(md5 $h)
+		echo -ne "ConnectTo=$name\n" | ressh "cat - >> /etc/tinc/$VPN_NAME/tinc.conf"
+		log "Added node $name ($h)"
+	done
+	ressh "echo $VPN_NAME > /etc/tinc/nets.boot"
+}
+
+generate_hosts_files() {
+	local id=$1
+
+	ressh "mkdir -p /etc/tinc/$VPN_NAME/hosts"
+
+	log "Regen private and public keys"
+	ressh "rm /etc/tinc/$VPN_NAME/hosts/$(md5 $host); rm /etc/tinc/$VPN_NAME/rsa_key.priv"
+	ressh "tincd -n $VPN_NAME -K4096"
+
+	log "Setup hosts file"
+	echo -e "Address=$host\nPort=655\nCompression=0\nSubnet=10.10.$NET_ID.$id/32" \
+		| ressh "cat - /etc/tinc/$VPN_NAME/hosts/$(md5 $host) > /tmp/ressh.tmp && " \
+		"mv /tmp/ressh.tmp /etc/tinc/$VPN_NAME/hosts/$(md5 $host)"
+
+	log "Setup tinc-up script"
+	echo -e "#!/bin/bash\nifconfig $VPN_NAME 10.10.$NET_ID.$id netmask 255.255.255.0 up" \
+		| ressh "cat - > /etc/tinc/$VPN_NAME/tinc-up && chmod +x /etc/tinc/$VPN_NAME/tinc-up"
+	
+	log "Setup tinc-down script"
+	echo -e "#!/bin/bash\nifconfig $VPN_NAME down" \
+		| ressh "cat - > /etc/tinc/$VPN_NAME/tinc-down && chmod +x /etc/tinc/$VPN_NAME/tinc-down"
+
+	log "Download tinc hosts file"
+	ressh "cat /etc/tinc/$VPN_NAME/hosts/$(md5 $host)" > /tmp/ressh.$(md5 $host).tmp
+}
+
+upload_files() {
+	for h in $1; do
+		cat /tmp/ressh.$(md5 $h).tmp | ressh "cat - > /etc/tinc/$VPN_NAME/hosts/$(md5 $h)"
+	done
+}
+
+tinc_service() {
+	ressh service tinc $1
+	[[ $1 == "stop" ]] && ressh "killall -9 tincd"
+}
+
+host_id=0
+for host in $HOSTS; do
+	log "Prep the systems for host $host"
+	tinc_service stop
+	install_packages
+	setup_tinc_conf "$HOSTS"
+	generate_hosts_files $(( $host_id + 1))
+	host_id=$(( $host_id + 1 ))
+done
+
+for host in $HOSTS; do
+	log "Upload tinc hosts files to $host"
+	upload_files "$HOSTS"
+done
+rm /tmp/ressh.*.tmp
+
+for host in $HOSTS; do
+	log "Start tinc at $host"
+	tinc_service start
+done
