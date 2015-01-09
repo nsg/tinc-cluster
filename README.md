@@ -4,7 +4,7 @@ Automatically setup a Tinc Meshed Network
 
 This is a script that automatically installs [tinc](http://www.tinc-vpn.org) and setup the needed configuration to setup a meshed server-less network.
 
-I only support Ubuntu but pull requests to add support for more distributions are happily accepted (it should be really easy do do so).
+I only support Ubuntu but pull requests to add support for more distributions are happily accepted (it should be really easy to do so).
 
 I created this as a easy way to setup a isolated network between several servers on the internet and I use this with my Docker deployment script [shdeploy](https://github.com/nsg/shdeploy) for a shared network.
 
@@ -13,7 +13,7 @@ I created this as a easy way to setup a isolated network between several servers
 The script reads a white space separated list (separated by a space, tab, newline, ...) of DNS addresses (or raw IP if you prefer). There are two parameters where only the first one are required.
 
 ```
-usage: ./setup-vpn name
+usage: ./setup-vpn name [id]
        name     Name the VPN/device, keep it to [a-z0-9].
        id       Select 0-254, the network addresses will be
                 based on 10.10.{id}.{incremental number}.
